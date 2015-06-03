@@ -262,7 +262,7 @@ probe (const char *path, char **device_names, char delim)
 
   if (path != NULL)
     {
-      grub_path = canonicalize_file_name (path);
+      grub_path = grub_canonicalize_file_name (path);
       if (! grub_path)
 	grub_util_error (_("failed to get canonical path of `%s'"), path);
       device_names = grub_guess_root_devices (grub_path);
@@ -728,11 +728,14 @@ help_filter (int key, const char *text, void *input __attribute__ ((unused)))
 
       case 't':
 	{
-	  char *ret, *t = get_targets_string ();
+	  char *ret, *t = get_targets_string (), *def;
 
-	  ret = xasprintf ("%s\n%s %s [default=%s]", _("print TARGET"),
-			    _("available targets:"), t, targets[print]);
+	  def = xasprintf (_("[default=%s]"), targets[print]);
+
+	  ret = xasprintf ("%s\n%s %s %s", _("print TARGET"),
+			    _("available targets:"), t, def);
 	  free (t);
+	  free (def);
 	  return ret;
 	}
 

@@ -496,13 +496,13 @@ validate_lv (struct grub_diskfilter_lv *lv)
   if (!lv)
     return grub_error (GRUB_ERR_UNKNOWN_DEVICE, "unknown volume");
 
-  if (lv->vg->extent_size == 0)
+  if (!lv->vg || lv->vg->extent_size == 0)
     return grub_error (GRUB_ERR_READ_ERROR, "invalid volume");
 
   for (i = 0; i < lv->segment_count; i++)
     {
       grub_err_t err;
-      err = validate_segment (&lv->segments[1]);
+      err = validate_segment (&lv->segments[i]);
       if (err)
 	return err;
     }
@@ -941,8 +941,10 @@ grub_diskfilter_vg_register (struct grub_diskfilter_vg *vg)
 
   for (lv = vg->lvs; lv; lv = lv->next)
     {
-      /* RAID 1 and single-disk RAID 0 don't use a chunksize but code assumes one so set
-	 one. */
+      grub_err_t err;
+
+      /* RAID 1 and single-disk RAID 0 don't use a chunksize but code
+         assumes one so set one. */
       for (i = 0; i < lv->segment_count; i++)
 	{
 	  if (lv->segments[i].type == 1)
@@ -952,17 +954,6 @@ grub_diskfilter_vg_register (struct grub_diskfilter_vg *vg)
 	      && lv->segments[i].stripe_size == 0)
 	    lv->segments[i].stripe_size = 64;
 	}
-    }
-
-  for (lv = vg->lvs; lv; lv = lv->next)
-    {
-      grub_err_t err;
-
-      /* RAID 1 doesn't use a chunksize but code assumes one so set
-	 one. */
-      for (i = 0; i < lv->segment_count; i++)
-	if (lv->segments[i].type == 1)
-	  lv->segments[i].stripe_size = 64;
 
       err = validate_lv(lv);
       if (err)
@@ -1007,7 +998,6 @@ grub_diskfilter_vg_register (struct grub_diskfilter_vg *vg)
 	      lv->fullname = tmp;
 	    }
 	}
-      lv->vg = vg;
     }
   /* Add our new array to the list.  */
   vg->next = array_list;
@@ -1041,7 +1031,10 @@ grub_diskfilter_make_raid (grub_size_t uuidlen, char *uuid, int nmemb,
 	if (n == 1)
 	  n = (layout >> 8) & 0xFF;
 	if (n == 0)
-	  return NULL;
+	  {
+	    grub_free (uuid);
+	    return NULL;
+	  }
 
 	totsize = grub_divmod64 (nmemb * disk_size, n, 0);
       }
@@ -1055,6 +1048,7 @@ grub_diskfilter_make_raid (grub_size_t uuidlen, char *uuid, int nmemb,
       break;
 
     default:
+      grub_free (uuid);
       return NULL;
     }
 
@@ -1077,7 +1071,10 @@ grub_diskfilter_make_raid (grub_size_t uuidlen, char *uuid, int nmemb,
     }
   array = grub_zalloc (sizeof (*array));
   if (!array)
-    return NULL;
+    {
+      grub_free (uuid);
+      return NULL;
+    }
   array->uuid = uuid;
   array->uuid_len = uuidlen;
   if (name)
@@ -1099,8 +1096,16 @@ grub_diskfilter_make_raid (grub_size_t uuidlen, char *uuid, int nmemb,
     goto fail;
   array->lvs->segment_count = 1;
   array->lvs->visible = 1;
-  array->lvs->name = array->name;
-  array->lvs->fullname = array->name;
+  if (array->name)
+    {
+      array->lvs->name = grub_strdup (array->name);
+      if (!array->lvs->name)
+	goto fail;
+      array->lvs->fullname = grub_strdup (array->name);
+      if (!array->lvs->fullname)
+	goto fail;
+    }
+  array->lvs->vg = array;
 
   array->lvs->idname = grub_malloc (sizeof ("mduuid/") + 2 * uuidlen);
   if (!array->lvs->idname)
@@ -1150,13 +1155,26 @@ grub_diskfilter_make_raid (grub_size_t uuidlen, char *uuid, int nmemb,
   return array;
 
  fail:
-  grub_free (array->lvs);
+  if (array->lvs)
+    {
+      grub_free (array->lvs->name);
+      grub_free (array->lvs->fullname);
+      grub_free (array->lvs->idname);
+      if (array->lvs->segments)
+	{
+	  grub_free (array->lvs->segments->nodes);
+	  grub_free (array->lvs->segments);
+	}
+      grub_free (array->lvs);
+    }
   while (array->pvs)
     {
       pv = array->pvs->next;
       grub_free (array->pvs);
       array->pvs = pv;
     }
+  grub_free (array->name);
+  grub_free (array->uuid);
   grub_free (array);
   return NULL;
 }
@@ -1259,10 +1277,9 @@ free_array (void)
 	{
 	  unsigned i;
 	  vg->lvs = lv->next;
-	  if (lv->name != lv->fullname)
-	    grub_free (lv->fullname);
-	  if (lv->name != vg->name)
-	    grub_free (lv->name);
+	  grub_free (lv->fullname);
+	  grub_free (lv->name);
+	  grub_free (lv->idname);
 	  for (i = 0; i < lv->segment_count; i++)
 	    grub_free (lv->segments[i].nodes);
 	  grub_free (lv->segments);
